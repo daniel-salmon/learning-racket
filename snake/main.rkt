@@ -1,10 +1,11 @@
 #lang racket
 (require 2htdp/universe 2htdp/image math)
 
-(struct pit (snake goos) #:transparent)
+(struct pit (snake goos rocks) #:transparent)
 (struct snake (dir segs eaten-goos) #:transparent)
 (struct posn (x y) #:transparent)
 (struct goo (loc expire super) #:transparent)
+(struct rock (loc) #:transparent)
 
 (define TICK-RATE 1/10)
 (define SIZE 30)
@@ -13,10 +14,12 @@
 (define HEIGHT-PX (* SEG-SIZE SIZE))
 (define MT-SCENE (empty-scene WIDTH-PX HEIGHT-PX))
 
+(define ROCK-MOVE-PROB .01)
 (define NEW-GOO-PROB .01)
 (define SUPER-GOO-PROB .1)
 (define MEAN-EXPIRATION-TIME 150)
 
+(define ROCK-IMG .)
 (define GOO-IMG .)
 (define SUPER-GOO-IMG .)
 (define SEG-IMG .)
@@ -115,17 +118,32 @@
       (cons (fresh-goo) goos)
       goos))
 
+(define (fresh-rock)
+  (rock (posn (add1 (random (sub1 SIZE)))
+              (add1 (random (sub1 SIZE))))))
+
+(define (move-rock rock)
+  (if (<= (random) ROCK-MOVE-PROB)
+      (fresh-rock)
+      rock))
+
+(define (move-rocks rocks)
+  (cond [(empty? rocks) empty]
+        [else (cons (move-rock (first rocks)) (move-rocks (rest rocks)))]))
+
 (define (next-pit w)
   (define snake (pit-snake w))
   (define goos (pit-goos w))
+  (define rocks (pit-rocks w))
   (define goo-to-eat (can-eat snake goos))
   (if goo-to-eat
       (pit
        (if (goo-super goo-to-eat)
            (grow (grow snake))
            (grow snake))
-       (add-goo (age-goo (eat goos goo-to-eat))))
-      (pit (slither snake) (add-goo (age-goo goos)))))
+       (add-goo (age-goo (eat goos goo-to-eat)))
+       (move-rocks rocks))
+      (pit (slither snake) (add-goo (age-goo goos)) (move-rocks rocks))))
 
 (define (dir? x)
   (or (key=? x "up")
@@ -146,7 +164,7 @@
               (cons? (rest (snake-segs the-snake))))
          (stop-with w)]
         [else
-         (pit (snake-change-dir the-snake d) (pit-goos w))]))
+         (pit (snake-change-dir the-snake d) (pit-goos w) (pit-rocks w))]))
 
 (define (direct-snake w ke)
   (cond [(dir? ke) (world-change-dir w ke)]
@@ -164,6 +182,16 @@
                (first posns)
                (first imgs)
                (img-list+scene (rest posns) (rest imgs) scene))]))
+
+(define (rock-list+scene rocks scene)
+  (define (get-posns-from-rock rocks)
+    (cond [(empty? rocks) empty]
+          [else (cons (rock-loc (first rocks))
+                      (get-posns-from-rock (rest rocks)))]))
+  (define (get-imgs-from-rock rocks)
+    (cond [(empty? rocks) empty]
+          [else (cons ROCK-IMG (get-imgs-from-rock (rest rocks)))]))
+  (img-list+scene (get-posns-from-rock rocks) (get-imgs-from-rock rocks) scene))
 
 (define (goo-list+scene goos scene)
   (define (get-posns-from-goo goos)
@@ -192,10 +220,11 @@
 
 (define (render-pit w)
   (snake+scene (pit-snake w)
-               (goo-list+scene (pit-goos w) MT-SCENE)))
+               (rock-list+scene (pit-rocks w)
+                                (goo-list+scene (pit-goos w) MT-SCENE))))
 
-(define (self-colliding? sn)
-  (cons? (member (snake-head sn) (snake-body sn))))
+(define (self-colliding? snake)
+  (cons? (member (snake-head snake) (snake-body snake))))
 
 (define (wall-colliding? snake)
   (define x (posn-x (snake-head snake)))
@@ -203,9 +232,18 @@
   (or (= 0 x) (= x SIZE)
       (= 0 y) (= y SIZE)))
 
+(define (rock-colliding? snake rocks)
+  (cond [(empty? rocks) #f]
+        [else (define x (posn-x (snake-head snake)))
+              (define y (posn-y (snake-head snake)))
+              (define rock-x (posn-x (rock-loc (first rocks))))
+              (define rock-y (posn-y (rock-loc (first rocks))))
+              (or (and (= x rock-x) (= y rock-y)) (rock-colliding? snake (rest rocks)))]))
+
 (define (dead? w)
   (define snake (pit-snake w))
-  (or (self-colliding? snake) (wall-colliding? snake)))
+  (define rocks (pit-rocks w))
+  (or (self-colliding? snake) (wall-colliding? snake) (rock-colliding? snake rocks)))
 
 (define (render-end w)
   (define n (number->string (snake-eaten-goos (pit-snake w))))
@@ -219,7 +257,10 @@
                        (fresh-goo)
                        (fresh-goo)
                        (fresh-goo)
-                       (fresh-goo)))
+                       (fresh-goo))
+                 (list (fresh-rock)
+                       (fresh-rock)
+                       (fresh-rock)))
     (on-tick next-pit TICK-RATE)
     (on-key direct-snake)
     (to-draw render-pit)
